@@ -2,6 +2,8 @@
 .repo/
 .userconfig
 .var.profile
+.DS_Store
+.userconfig-*
 *.swp
 *.pyc
 *.fix_b2g_stack.cache
