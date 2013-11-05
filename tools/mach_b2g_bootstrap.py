@@ -86,12 +86,27 @@ CATEGORIES = {
         'short': 'Potpourri',
         'long': 'Potent potables and assorted snacks.',
         'priority': 10,
+    },
+    'disabled': {
+        'short': 'Disabled',
+        'long': 'These commands are unavailable for your current context, run "mach <command>" to see why.',
+        'priority': 0,
     }
 }
 
 def _find_xulrunner_sdk(gaia_dir):
-    # TODO This should use the XULRUNNER_DIRECTORY variable in the gaia
-    # Makefile, but there is currently no easy way to extract it.
+    # Try to use the print-xulrunner-sdk target first, if it fails,
+    # then do some lucky guess
+    try:
+        cmd = ['make', '-s', '-C', gaia_dir, 'print-xulrunner-sdk']
+        sdk = subprocess.check_output(cmd).decode('utf-8').strip()
+        return os.path.join(gaia_dir, sdk)
+    except subprocess.CalledProcessError:
+        pass
+
+    # TODO: We still rely on this heuristic for gaia version that do not
+    # have the print-xulrunner-sdk target. Once no more branch are like this,
+    # this can be dropped.
     xulrunner_sdks = [d for d in os.listdir(gaia_dir)
                       if d.startswith('xulrunner-sdk')]
     if not xulrunner_sdks:
@@ -163,7 +178,7 @@ def bootstrap(b2g_home):
         print(LOAD_CONFIG_FAILED % e.output.strip())
         sys.exit(1)
 
-    # If a gecko source tree is detected, its mach modules are are also
+    # If a gecko source tree is detected, its mach modules are also
     # loaded.
     gecko_dir = os.environ.get('GECKO_PATH', os.path.join(b2g_home, 'gecko'))
     gecko_bootstrap_dir = os.path.join(gecko_dir, 'build')
