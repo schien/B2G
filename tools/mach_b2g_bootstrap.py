@@ -9,6 +9,7 @@ import os
 import platform
 import subprocess
 import sys
+import tempfile
 import time
 
 
@@ -166,17 +167,21 @@ def bootstrap(b2g_home):
     # Load the configuration created by the build system.
     # We need to call set -a because load-config doesn't
     # export the variables it creates.
+    f = tempfile.NamedTemporaryFile()
     cmd = ['/usr/bin/env', 'bash', '-c',
-           'set -a && source %s > /dev/null && printenv'
-            % os.path.join(b2g_home, 'load-config.sh')]
+           'set -a && source %s > %s && printenv'
+            % (os.path.join(b2g_home, 'load-config.sh'), f.name)]
     try:
         output = subprocess.check_output(cmd, stderr=subprocess.STDOUT, cwd=b2g_home)
-        for line in output.splitlines():
+        for line in [l.decode('utf8') for l in output.splitlines()]:
             key, value = line.split('=', 1)
-            os.environ[key] = value
+            os.environ[key.encode('utf8')] = value.encode('utf8')
     except subprocess.CalledProcessError, e:
         print(LOAD_CONFIG_FAILED % e.output.strip())
         sys.exit(1)
+
+    print(f.read())
+    f.close()
 
     # If a gecko source tree is detected, its mach modules are also
     # loaded.
