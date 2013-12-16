@@ -35,8 +35,12 @@ BRANCH=${BRANCH:-master}
 
 while [ $# -ge 1 ]; do
 	case $1 in
-	-d|-l|-f|-n|-c|-q)
+	-d|-l|-f|-n|-c|-q|-j*)
 		sync_flags="$sync_flags $1"
+		if [ $1 = "-j" ]; then
+			shift
+			sync_flags+=" $1"
+		fi
 		shift
 		;;
 	--help|-h)
@@ -106,6 +110,14 @@ case "$1" in
 	repo_sync $1
 	;;
 
+"fugu")
+	echo DEVICE=fugu >> .tmp-config &&
+	echo LUNCH=fugu-eng >> .tmp-config &&
+	echo TARGET_HVGA_ENABLE=true >> .tmp-config &&
+	echo GONK_VERSION=SP7710_13A_W13.39.7 >> .tmp-config &&
+	repo_sync $1
+	;;
+
 "tara")
 	echo DEVICE=sp8810ea >> .tmp-config &&
 	echo LUNCH=sp8810eabase-eng >> .tmp-config &&
@@ -154,6 +166,7 @@ case "$1" in
 	echo - hamachi
 	echo - helix
 	echo - wasabi
+	echo - fugu
 	echo - tara
 	echo - pandaboard
 	echo - emulator
