@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 
-'''Get a dump of about:memory from all the processes running on your device.
+"""Get a dump of about:memory from all the processes running on your device.
 
 You can then view these dumps using a recent Firefox nightly on your desktop by
 opening about:memory and using the button at the bottom of the page to load the
@@ -12,15 +12,14 @@ a while, and these logs are large, so you can turn it off if you like.
 This script also saves the output of b2g-procrank and a few other diagnostic
 programs.  If you compiled with DMD and have it enabled, we'll also pull the
 DMD reports.
-
-'''
+"""
 
 from __future__ import print_function
 
 import sys
-if sys.version_info < (2,7):
+if sys.version_info < (2, 7):
     # We need Python 2.7 because we import argparse.
-    print('This script requires Python 2.7.')
+    print('This script requires Python 2.7.', file=sys.stderr)
     sys.exit(1)
 
 import os
@@ -37,8 +36,9 @@ from gzip import GzipFile
 import include.device_utils as utils
 import fix_b2g_stack
 
+
 def process_dmd_files(dmd_files, args):
-    '''Run fix_b2g_stack.py on each of these files.'''
+    """Run fix_b2g_stack.py on each of these files."""
     if not dmd_files or args.no_dmd:
         return
 
@@ -54,13 +54,17 @@ def process_dmd_files(dmd_files, args):
             An error occurred while processing the DMD dumps.  Not to worry!
             The raw dumps are still there; just run fix_b2g_stack.py on
             them.
-            '''))
+            '''), file=sys.stderr)
         traceback.print_exc(e)
 
-def process_dmd_files_impl(dmd_files, args):
-    out_dir = os.path.dirname(dmd_files[0])
 
-    procrank = open(os.path.join(out_dir, 'b2g-procrank'), 'r').read().split('\n')
+def get_proc_names(out_dir):
+    """
+    Retrieves a mapping of process names to their PID as well as the raw
+    output of b2g-procrank.
+    """
+    with open(os.path.join(out_dir, 'b2g-procrank'), 'r') as f:
+        procrank = f.read().split('\n')
     proc_names = {}
     for line in procrank:
         # App names may contain spaces and special characters (e.g.
@@ -73,6 +77,13 @@ def process_dmd_files_impl(dmd_files, args):
         if not match:
             continue
         proc_names[int(match.group(2))] = re.sub('\W', '', match.group(1)).lower()
+    return proc_names, procrank
+
+
+def process_dmd_files_impl(dmd_files, args):
+    out_dir = os.path.dirname(dmd_files[0])
+
+    proc_names, procrank = get_proc_names(out_dir)
 
     for f in dmd_files:
         # Extract the PID (e.g. 111) and UNIX time (e.g. 9999999) from the name
@@ -94,8 +105,9 @@ def process_dmd_files_impl(dmd_files, args):
             outfile_name = 'processed-' + basename
 
         outfile = GzipFile(os.path.join(out_dir, outfile_name), 'w')
-        def write(str):
-            print(str, file=outfile)
+
+        def write(s):
+            print(s, file=outfile)
 
         write('# Processed DMD output')
         if creation_time:
@@ -119,8 +131,35 @@ def process_dmd_files_impl(dmd_files, args):
         if not args.keep_individual_reports:
             os.remove(f)
 
+
+def get_kgsl_files(out_dir):
+    """Retrieves kgsl graphics memory usage files."""
+    print()
+    print('Processing kgsl files.')
+
+    proc_names, _ = get_proc_names(out_dir)
+
+    try:
+        kgsl_pids = utils.remote_ls('/d/kgsl/proc/', verbose=False)
+    except subprocess.CalledProcessError:
+        # Probably not a kgsl device.
+        print('kgsl graphics memory logs not available for this device.')
+        return
+
+    for pid in filter(None, kgsl_pids):
+        name = proc_names[int(pid)] if int(pid) in proc_names else pid
+        remote_file = '/d/kgsl/proc/%s/mem' % pid
+        dest_file = os.path.join(out_dir, 'kgsl-%s-mem' % name)
+        try:
+            utils.pull_remote_file(remote_file, dest_file)
+        except subprocess.CalledProcessError:
+            print('Unable to retrieve kgsl file: %s' % remote_file, file=sys.stderr)
+
+    print('Done processing kgsl files.')
+
+
 def merge_files(dir, files):
-    '''Merge the given memory reporter dump files into one giant file.'''
+    """Merge the given memory reporter dump files into one giant file."""
     dumps = [json.load(GzipFile(os.path.join(dir, f))) for f in files]
 
     merged_dump = dumps[0]
@@ -129,12 +168,12 @@ def merge_files(dir, files):
         # dumps, otherwise we can't merge them.
         if set(dump.keys()) != set(merged_dump.keys()):
             print("Can't merge dumps because they don't have the "
-                  "same set of properties.")
+                  "same set of properties.", file=sys.stderr)
             return
         for prop in merged_dump:
             if prop != 'reports' and dump[prop] != merged_dump[prop]:
                 print("Can't merge dumps because they don't have the "
-                      "same value for property '%s'" % prop)
+                      "same value for property '%s'" % prop, file=sys.stderr)
 
         merged_dump['reports'] += dump['reports']
 
@@ -143,6 +182,7 @@ def merge_files(dir, files):
               open(merged_reports_path, 'w'),
               indent=2)
     return merged_reports_path
+
 
 def get_dumps(args):
     if args.output_directory:
@@ -179,6 +219,7 @@ def get_dumps(args):
                 [os.path.join(out_dir, f) for f in dmd_files])
 
     return utils.run_and_delete_dir_on_exception(do_work, out_dir)
+
 
 def get_and_show_info(args):
     (out_dir, merged_reports_path, dmd_files) = get_dumps(args)
@@ -232,31 +273,41 @@ def get_and_show_info(args):
 
     process_dmd_files(dmd_files, args)
 
+    if not args.no_kgsl_logs:
+        get_kgsl_files(out_dir)
+
+
 def main():
-    parser = argparse.ArgumentParser(description=__doc__,
+    parser = argparse.ArgumentParser(
+        description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter)
 
-    parser.add_argument('--minimize', '-m', dest='minimize_memory_usage',
+    parser.add_argument(
+        '--minimize', '-m', dest='minimize_memory_usage',
         action='store_true', default=False,
         help='Minimize memory usage before collecting the memory reports.')
 
-    parser.add_argument('--directory', '-d', dest='output_directory',
+    parser.add_argument(
+        '--directory', '-d', dest='output_directory',
         action='store', metavar='DIR',
         help=textwrap.dedent('''\
             The directory to store the reports in.  By default, we'll store the
             reports in the directory about-memory-N, for some N.'''))
 
-    parser.add_argument('--leave-on-device', '-l', dest='leave_on_device',
+    parser.add_argument(
+        '--leave-on-device', '-l', dest='leave_on_device',
         action='store_true', default=False,
         help='Leave the reports on the device after pulling them.')
 
-    parser.add_argument('--no-auto-open', '-o', dest='open_in_firefox',
+    parser.add_argument(
+        '--no-auto-open', '-o', dest='open_in_firefox',
         action='store_false', default=True,
         help=textwrap.dedent("""\
             By default, we try to open the memory report we fetch in Firefox.
             Specify this option prevent this."""))
 
-    parser.add_argument('--keep-individual-reports',
+    parser.add_argument(
+        '--keep-individual-reports',
         dest='keep_individual_reports',
         action='store_true', default=False,
         help=textwrap.dedent('''\
@@ -266,22 +317,31 @@ def main():
 
     gc_log_group = parser.add_mutually_exclusive_group()
 
-    gc_log_group.add_argument('--no-gc-cc-log',
+    gc_log_group.add_argument(
+        '--no-gc-cc-log',
         dest='get_gc_cc_logs',
         action='store_false',
         default=True,
         help="Don't get a gc/cc log.")
 
-    gc_log_group.add_argument('--abbreviated-gc-cc-log',
+    gc_log_group.add_argument(
+        '--abbreviated-gc-cc-log',
         dest='abbreviated_gc_cc_log',
         action='store_true',
         default=False,
         help='Get an abbreviated GC/CC log, instead of a full one.')
 
-    parser.add_argument('--no-dmd', action='store_true', default=False,
+    parser.add_argument('--no-kgsl-logs',
+                        action='store_true',
+                        default=False,
+                        help='''Don't get the kgsl graphics memory logs.''')
+
+    parser.add_argument(
+        '--no-dmd', action='store_true', default=False,
         help='''Don't process DMD logs, even if they're available.''')
 
-    dmd_group = parser.add_argument_group('optional DMD args (passed to fix_b2g_stack)',
+    dmd_group = parser.add_argument_group(
+        'optional DMD args (passed to fix_b2g_stack)',
         textwrap.dedent('''\
             You only need to worry about these options if you're running DMD on
             your device.  These options get passed to fix_b2g_stack.'''))
