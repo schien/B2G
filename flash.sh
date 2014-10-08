@@ -1,6 +1,7 @@
 #!/bin/bash
 
 . load-config.sh
+test -f $DEVICE_DIR/flash.sh && . $DEVICE_DIR/flash.sh
 
 ADB=${ADB:-adb}
 FASTBOOT=${FASTBOOT:-fastboot}
@@ -246,8 +247,9 @@ delete_extra_gecko_files_on_device()
 		#    you squint at files_to_remove, you'll see that it will
 		#    contain files which are on the host but not on the device;
 		#    obviously we can't remove those files from the device).
-
-		run_adb shell "cd /system/b2g && rm $files_to_remove" > /dev/null
+		for to_remove in $files_to_remove; do
+			run_adb shell "rm /system/b2g/$to_remove" > /dev/null
+		done
 	fi
 	return 0
 }
@@ -329,6 +331,17 @@ while [ $# -gt 0 ]; do
 done
 
 case "$PROJECT" in
+"shallow")
+	run_adb shell stop b2g &&
+	run_adb remount &&
+	flash_gecko &&
+	flash_gaia &&
+	update_time &&
+	echo Restarting B2G &&
+	run_adb shell start b2g
+	exit $?
+	;;
+
 "gecko")
 	run_adb shell stop b2g &&
 	run_adb remount &&

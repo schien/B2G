@@ -17,6 +17,7 @@ DMD reports.
 from __future__ import print_function
 
 import sys
+
 if sys.version_info < (2, 7):
     # We need Python 2.7 because we import argparse.
     print('This script requires Python 2.7.', file=sys.stderr)
@@ -28,7 +29,9 @@ import textwrap
 import argparse
 import json
 import urllib
+import shutil
 import subprocess
+import tarfile
 import traceback
 from datetime import datetime
 from gzip import GzipFile
@@ -80,54 +83,89 @@ def get_proc_names(out_dir):
     return proc_names, procrank
 
 
+def get_objdir_and_product(args):
+    """Attempts to figure out the objdir and device name using the load-config.sh script"""
+    if args.gecko_objdir and args.product:
+        # User already specified objdir and product.
+        return
+
+    load_config_script = os.path.join(os.path.dirname(__file__), '../load-config.sh')
+    try:
+        # Run load-config.sh in a bash shell and spit out the config vars we
+        # care about as a comma separated list when exiting.
+        variables = subprocess.Popen(
+            ["bash", "-c",
+             "trap 'echo -n \"${GECKO_OBJDIR}\",\"${DEVICE_NAME}\"' exit; source \"$1\" > /dev/null 2>&1",
+             "_", load_config_script],
+            shell=False, stdout=subprocess.PIPE).communicate()[0].split(',')
+
+        if not args.gecko_objdir and variables[0]:
+            args.gecko_objdir = variables[0]
+
+        if not args.product and variables[1]:
+            args.product = variables[1]
+
+    except Exception as e:
+        pass
+
+
 def process_dmd_files_impl(dmd_files, args):
     out_dir = os.path.dirname(dmd_files[0])
 
     proc_names, procrank = get_proc_names(out_dir)
+    get_objdir_and_product(args)
 
     for f in dmd_files:
-        # Extract the PID (e.g. 111) and UNIX time (e.g. 9999999) from the name
-        # of the dmd file (e.g. dmd-9999999-111.txt.gz).
+        # Extract the PID (e.g. 111) and UNIX time (e.g. 9999999) and the file
+        # kind ('txt' or 'json', depending on the version) from the name
+        # of the dmd file (e.g. dmd-9999999-111.json.gz).
         basename = os.path.basename(f)
-        dmd_filename_match = re.match(r'^dmd-(\d+)-(\d+).', basename)
+        dmd_filename_match = re.match(r'^dmd-(\d+)-(\d+).(txt|json)', basename)
         if dmd_filename_match:
             creation_time = datetime.fromtimestamp(int(dmd_filename_match.group(1)))
             pid = int(dmd_filename_match.group(2))
+            kind = dmd_filename_match.group(3)
             if pid in proc_names:
                 proc_name = proc_names[pid]
-                outfile_name = 'dmd-%s-%d.txt.gz' % (proc_name, pid)
+                outfile_name = 'dmd-%s-%d.%s' % (proc_name, pid, kind)
             else:
                 proc_name = None
-                outfile_name = 'dmd-%d.txt.gz' % pid
+                outfile_name = 'dmd-%d.%s' % (pid, kind)
         else:
             pid = None
             creation_time = None
             outfile_name = 'processed-' + basename
+            if outfile_name.endswith(".gz"):
+                outfile_name = outfile_name[:-3]
 
-        outfile = GzipFile(os.path.join(out_dir, outfile_name), 'w')
+        outfile_path = os.path.join(out_dir, outfile_name)
+        with GzipFile(outfile_path + '.gz', 'w') if args.compress_dmd_logs else \
+                open(outfile_path, 'w') as outfile:
 
-        def write(s):
-            print(s, file=outfile)
+            def write(s):
+                print(s, file=outfile)
 
-        write('# Processed DMD output')
-        if creation_time:
-            write('# Created on %s, device time (may be unreliable).' %
-                  creation_time.strftime('%c'))
-        write('# Processed on %s, host machine time.' %
-              datetime.now().strftime('%c'))
-        if proc_name:
-            write('# Corresponds to "%s" app, pid %d' % (proc_name, pid))
-        elif pid:
-            write('# Corresponds to unknown app, pid %d' % pid)
-        else:
-            write('# Corresponds to unknown app, unknown pid.')
+            write('# Processed DMD output')
+            if creation_time:
+                write('# Created on %s, device time (may be unreliable).' %
+                      creation_time.strftime('%c'))
+            write('# Processed on %s, host machine time.' %
+                  datetime.now().strftime('%c'))
+            if proc_name:
+                write('# Corresponds to "%s" app, pid %d' % (proc_name, pid))
+            elif pid:
+                write('# Corresponds to unknown app, pid %d' % pid)
+            else:
+                write('# Corresponds to unknown app, unknown pid.')
 
-        write('#\n# Contents of b2g-procrank:\n#')
-        for line in procrank:
-            write('#    ' + line.strip())
-        write('\n')
+            write('#\n# Contents of b2g-procrank:\n#')
+            for line in procrank:
+                write('#    ' + line.strip())
+            write('\n')
 
-        fix_b2g_stack.fix_b2g_stacks_in_file(GzipFile(f, 'r'), outfile, args)
+            with GzipFile(f, 'r') as infile:
+                fix_b2g_stack.fix_b2g_stacks_in_file(infile, outfile, args)
+
         if not args.keep_individual_reports:
             os.remove(f)
 
@@ -276,6 +314,13 @@ def get_and_show_info(args):
     if not args.no_kgsl_logs:
         get_kgsl_files(out_dir)
 
+    if args.create_archive:
+        print('Archiving logs...')
+        archive_path = utils.get_archive_path(out_dir)
+        with tarfile.open(archive_path, 'w:bz2') as archive:
+            archive.add(out_dir)
+        shutil.rmtree(out_dir, ignore_errors=True)
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -293,6 +338,15 @@ def main():
         help=textwrap.dedent('''\
             The directory to store the reports in.  By default, we'll store the
             reports in the directory about-memory-N, for some N.'''))
+
+    parser.add_argument(
+        '--archive',
+        dest='create_archive',
+        action='store_true', default=False,
+        help=textwrap.dedent('''\
+            Package the reports into an archive and remove the intermediate
+            directory. A bz2 tar archive will be created with the name
+            <output_directory>.tar.bz2'''))
 
     parser.add_argument(
         '--leave-on-device', '-l', dest='leave_on_device',
@@ -331,6 +385,12 @@ def main():
         default=False,
         help='Get an abbreviated GC/CC log, instead of a full one.')
 
+    parser.add_argument(
+        '--uncompressed-gc-cc-log',
+        dest='compress_gc_cc_logs',
+        action='store_false', default=True,
+        help='Do not compress the individual GC/CC logs.')
+
     parser.add_argument('--no-kgsl-logs',
                         action='store_true',
                         default=False,
@@ -339,6 +399,13 @@ def main():
     parser.add_argument(
         '--no-dmd', action='store_true', default=False,
         help='''Don't process DMD logs, even if they're available.''')
+
+    parser.add_argument(
+        '--uncompressed-dmd-logs',
+        dest='compress_dmd_logs',
+        action='store_false', default=True,
+        help=textwrap.dedent('''\
+            Do not compress each individual DMD report after processing.'''))
 
     dmd_group = parser.add_argument_group(
         'optional DMD args (passed to fix_b2g_stack)',
